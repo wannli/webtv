@@ -15,10 +15,13 @@ async function getKalturaDownloadUrl(kalturaId: string): Promise<string | null> 
           action: 'list',
           ks: '{1:result:ks}',
           filter: { redirectFromEntryId: kalturaId },
-          responseProfile: {
-            type: 1,
-            fields: 'id',
-          },
+          responseProfile: { type: 1, fields: 'id' },
+        },
+        '3': {
+          service: 'flavorAsset',
+          action: 'list',
+          ks: '{1:result:ks}',
+          filter: { entryIdEqual: '{2:result:objects:0:id}' },
         },
         apiVersion: '3.3.0',
         format: 1,
@@ -31,11 +34,16 @@ async function getKalturaDownloadUrl(kalturaId: string): Promise<string | null> 
     if (!apiResponse.ok) return null;
     const apiData = await apiResponse.json();
     const entryId = apiData[1]?.objects?.[0]?.id;
-    
     if (!entryId) return null;
     
-    // Request English audio track (flavorParamId 100)
-    return `https://cdnapisec.kaltura.com/p/2503451/sp/0/playManifest/entryId/${entryId}/format/download/protocol/https/flavorParamIds/100`;
+    // Find English audio track
+    const flavors = apiData[2]?.objects || [];
+    const englishFlavor = flavors.find((f: { language: string; tags: string }) => 
+      f.language === 'English' && f.tags?.includes('audio_only')
+    );
+    const flavorParamId = englishFlavor?.flavorParamsId || 100; // Fallback to 100
+    
+    return `https://cdnapisec.kaltura.com/p/2503451/sp/0/playManifest/entryId/${entryId}/format/download/protocol/https/flavorParamIds/${flavorParamId}`;
   } catch {
     return null;
   }

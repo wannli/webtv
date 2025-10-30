@@ -9,7 +9,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Get audio download URL from Kaltura
-    // flavorParamIds 100-117 are audio-only tracks in different languages
     const apiResponse = await fetch('https://cdnapisec.kaltura.com/api_v3/service/multirequest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -24,10 +23,13 @@ export async function POST(request: NextRequest) {
           action: 'list',
           ks: '{1:result:ks}',
           filter: { redirectFromEntryId: kalturaId },
-          responseProfile: {
-            type: 1,
-            fields: 'id,duration',
-          },
+          responseProfile: { type: 1, fields: 'id,duration' },
+        },
+        '3': {
+          service: 'flavorAsset',
+          action: 'list',
+          ks: '{1:result:ks}',
+          filter: { entryIdEqual: '{2:result:objects:0:id}' },
         },
         apiVersion: '3.3.0',
         format: 1,
@@ -48,8 +50,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No entry found' }, { status: 404 });
     }
 
-    // Request English audio track (flavorParamId 100) - smallest file size
-    const downloadUrl = `https://cdnapisec.kaltura.com/p/2503451/sp/0/playManifest/entryId/${entryId}/format/download/protocol/https/flavorParamIds/100`;
+    // Find English audio track
+    const flavors = apiData[2]?.objects || [];
+    const englishFlavor = flavors.find((f: { language: string; tags: string }) => 
+      f.language === 'English' && f.tags?.includes('audio_only')
+    );
+    const flavorParamId = englishFlavor?.flavorParamsId || 100; // Fallback to 100
+    
+    const downloadUrl = `https://cdnapisec.kaltura.com/p/2503451/sp/0/playManifest/entryId/${entryId}/format/download/protocol/https/flavorParamIds/${flavorParamId}`;
 
     // Check AssemblyAI for existing transcript (unless force=true)
     if (!force) {
