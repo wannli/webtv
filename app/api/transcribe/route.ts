@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getTranscriptId, setTranscriptId } from '@/lib/transcript-cache';
 
 export async function POST(request: NextRequest) {
   try {
-    const { kalturaId, checkOnly, force } = await request.json();
+    const { kalturaId, checkOnly, force, startTime, endTime, totalDuration } = await request.json();
     
     if (!kalturaId) {
       return NextResponse.json({ error: 'Kaltura ID is required' }, { status: 400 });
     }
+    
+    const isSegmentRequest = startTime !== undefined && endTime !== undefined;
 
     // Get audio download URL from Kaltura
     const apiResponse = await fetch('https://cdnapisec.kaltura.com/api_v3/service/multirequest', {
@@ -57,36 +60,31 @@ export async function POST(request: NextRequest) {
     );
     const flavorParamId = englishFlavor?.flavorParamsId || 100; // Fallback to 100
     
-    const downloadUrl = `https://cdnapisec.kaltura.com/p/2503451/sp/0/playManifest/entryId/${entryId}/format/download/protocol/https/flavorParamIds/${flavorParamId}`;
+    const baseDownloadUrl = `https://cdnapisec.kaltura.com/p/2503451/sp/0/playManifest/entryId/${entryId}/format/download/protocol/https/flavorParamIds/${flavorParamId}`;
+    
+    // Check if this is a live stream entry
+    const isLiveStream = apiData[1]?.objects?.[0]?.objectType === 'KalturaLiveStreamEntry';
 
-    // Check AssemblyAI for existing transcript (unless force=true)
+    // Check cache for existing transcript (unless force=true)
     if (!force) {
-      const listResponse = await fetch('https://api.assemblyai.com/v2/transcript?limit=100', {
-        headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
-      });
-
-      if (listResponse.ok) {
-        const listData = await listResponse.json();
-        const matches = listData.transcripts?.filter((t: { audio_url: string; status: string; created: string }) => 
-          t.audio_url === downloadUrl && t.status === 'completed'
-        );
-        const existing = matches?.sort((a: { created: string }, b: { created: string }) => 
-          b.created.localeCompare(a.created)
-        )[0];
-
-        if (existing) {
-          const detailResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${existing.id}`, {
-            headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
-          });
+      const cachedTranscriptId = await getTranscriptId(entryId, isSegmentRequest ? startTime : undefined, isSegmentRequest ? endTime : undefined);
+      
+      if (cachedTranscriptId) {
+        const detailResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${cachedTranscriptId}`, {
+          headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
+        });
+        
+        if (detailResponse.ok) {
+          const detail = await detailResponse.json();
           
-          if (detailResponse.ok) {
-            const detail = await detailResponse.json();
-            
-            // Fetch paragraphs for cached transcript too
-            const paragraphsResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${existing.id}/paragraphs`, {
+          if (detail.status === 'completed') {
+            // Fetch paragraphs
+            const paragraphsResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${cachedTranscriptId}/paragraphs`, {
               headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
             });
             const paragraphsData = paragraphsResponse.ok ? await paragraphsResponse.json() : null;
+            
+            console.log('✓ Using cached transcript:', cachedTranscriptId);
             
             return NextResponse.json({
               text: detail.text,
@@ -94,6 +92,8 @@ export async function POST(request: NextRequest) {
               paragraphs: paragraphsData?.paragraphs || null,
               language: detail.language_code,
               cached: true,
+              segmentStart: isSegmentRequest ? startTime : undefined,
+              segmentEnd: isSegmentRequest ? endTime : undefined,
             });
           }
         }
@@ -106,61 +106,73 @@ export async function POST(request: NextRequest) {
     }
 
     // Submit new transcript to AssemblyAI
+    // For live streams, download HLS segments and upload to AssemblyAI
+    let audioUrl = baseDownloadUrl;
+    
+    if (isLiveStream) {
+      console.log('Live stream detected, downloading HLS segments...');
+      
+      const hlsResponse = await fetch(`${request.url.split('/api/transcribe')[0]}/api/download-hls`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryId,
+          flavorParamsId: flavorParamId,
+          startTime: isSegmentRequest ? startTime : undefined,
+          endTime: isSegmentRequest ? endTime : undefined,
+        }),
+      });
+      
+      if (!hlsResponse.ok) {
+        const error = await hlsResponse.text();
+        console.error('HLS download error:', error);
+        return NextResponse.json({ error: `Failed to download HLS: ${error}` }, { status: 500 });
+      }
+      
+      const hlsData = await hlsResponse.json();
+      audioUrl = hlsData.upload_url;
+      console.log('HLS uploaded to AssemblyAI:', audioUrl);
+    }
+    
+    const submitBody = {
+      audio_url: audioUrl,
+      speaker_labels: true,
+    };
+    
+    console.log('Submitting to AssemblyAI:', { 
+      isSegment: isSegmentRequest, 
+      isLiveStream,
+      audioUrl
+    });
+
     const submitResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
       method: 'POST',
       headers: {
         'Authorization': process.env.ASSEMBLYAI_API_KEY!,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        audio_url: downloadUrl,
-        speaker_labels: true,
-      }),
+      body: JSON.stringify(submitBody),
     });
 
     if (!submitResponse.ok) {
       const error = await submitResponse.text();
+      console.error('AssemblyAI submit error:', error);
       return NextResponse.json({ error: `Failed to submit: ${error}` }, { status: 500 });
     }
 
     const submitData = await submitResponse.json();
     const transcriptId = submitData.id;
+    console.log('✓ Submitted transcript:', transcriptId);
 
-    // Poll until completed
-    let transcript;
-    while (true) {
-      await new Promise(resolve => setTimeout(resolve, 3000)); // Poll every 3 seconds
-      
-      const pollResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
-        headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
-      });
+    // Cache the transcript ID for future lookups
+    await setTranscriptId(entryId, transcriptId, isSegmentRequest ? startTime : undefined, isSegmentRequest ? endTime : undefined);
 
-      if (!pollResponse.ok) {
-        return NextResponse.json({ error: 'Failed to poll status' }, { status: 500 });
-      }
-
-      transcript = await pollResponse.json();
-
-      if (transcript.status === 'completed') {
-        break;
-      } else if (transcript.status === 'error') {
-        return NextResponse.json({ error: transcript.error }, { status: 500 });
-      }
-    }
-
-    // Fetch paragraphs for better formatting
-    const paragraphsResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}/paragraphs`, {
-      headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
-    });
-
-    const paragraphsData = paragraphsResponse.ok ? await paragraphsResponse.json() : null;
-
+    // Return transcript ID immediately for client-side polling
     return NextResponse.json({
-      text: transcript.text,
-      words: transcript.words || [],
-      paragraphs: paragraphsData?.paragraphs || null,
-      language: transcript.language_code,
-      cached: false,
+      transcriptId,
+      status: 'processing',
+      segmentStart: isSegmentRequest ? startTime : undefined,
+      segmentEnd: isSegmentRequest ? endTime : undefined,
     });
     
   } catch (error) {

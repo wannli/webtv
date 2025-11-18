@@ -10,6 +10,7 @@ interface KalturaPlayer {
 interface LiveTranscriptionProps {
   player?: KalturaPlayer;
   isLive?: boolean;
+  kalturaId: string;
 }
 
 interface Turn {
@@ -19,21 +20,196 @@ interface Turn {
   timestamp?: number;
 }
 
-export function LiveTranscription({ player, isLive }: LiveTranscriptionProps) {
+interface Word {
+  text: string;
+  speaker?: string | null;
+  start: number;
+  end: number;
+}
+
+interface Paragraph {
+  text: string;
+  start: number;
+  end: number;
+  words: Word[];
+}
+
+interface Gap {
+  start: number;
+  end: number;
+}
+
+export function LiveTranscription({ player, isLive, kalturaId }: LiveTranscriptionProps) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
+  const [batchSegments, setBatchSegments] = useState<Paragraph[]>([]);
+  const [isBackfilling, setIsBackfilling] = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
 
+  const backfillGaps = useCallback(async (gaps: Gap[]) => {
+    setIsBackfilling(true);
+
+    for (let i = 0; i < gaps.length; i++) {
+      const gap = gaps[i];
+      setBackfillProgress(`Transcribing segment ${i + 1}/${gaps.length}: ${Math.floor(gap.start)}s - ${Math.floor(gap.end)}s`);
+
+      try {
+        // Submit transcription job for this gap
+        const response = await fetch('/api/transcribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kalturaId,
+            startTime: gap.start,
+            endTime: gap.end,
+            totalDuration: gap.end,
+          }),
+        });
+
+        if (!response.ok) {
+          console.error(`Failed to transcribe gap ${gap.start}-${gap.end}`);
+          continue;
+        }
+
+        const data = await response.json();
+        
+        // Check if this is a completed transcript (cached) or needs polling
+        if (data.paragraphs) {
+          // Cached transcript, handle immediately
+          console.log(`Got cached transcription for gap ${gap.start}-${gap.end}:`, {
+            paragraphCount: data.paragraphs?.length || 0
+          });
+          
+          if (data.paragraphs.length > 0) {
+            const adjustedParagraphs = data.paragraphs.map((para: Paragraph) => ({
+              ...para,
+              start: (para.start / 1000) + gap.start,
+              end: (para.end / 1000) + gap.start,
+              words: para.words.map((w: Word) => ({
+                ...w,
+                start: (w.start / 1000) + gap.start,
+                end: (w.end / 1000) + gap.start,
+              })),
+            }));
+            
+            setBatchSegments(prev => [...prev, ...adjustedParagraphs].sort((a, b) => a.start - b.start));
+          }
+        } else if (data.transcriptId) {
+          // New transcript, poll for completion
+          console.log(`Polling for transcript ${data.transcriptId} (gap ${gap.start}-${gap.end})`);
+          
+          let pollCount = 0;
+          const maxPolls = 200; // Max ~10 minutes (3s * 200)
+          
+          while (pollCount < maxPolls) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            pollCount++;
+            
+            const pollResponse = await fetch('/api/transcribe/poll', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ transcriptId: data.transcriptId }),
+            });
+            
+            if (!pollResponse.ok) {
+              console.error(`Poll failed for ${data.transcriptId}`);
+              break;
+            }
+            
+            const pollData = await pollResponse.json();
+            
+            if (pollData.status === 'completed' && pollData.paragraphs && pollData.paragraphs.length > 0) {
+              console.log(`Transcription completed for gap ${gap.start}-${gap.end}`);
+              const adjustedParagraphs = pollData.paragraphs.map((para: Paragraph) => ({
+                ...para,
+                start: (para.start / 1000) + gap.start,
+                end: (para.end / 1000) + gap.start,
+                words: para.words.map((w: Word) => ({
+                  ...w,
+                  start: (w.start / 1000) + gap.start,
+                  end: (w.end / 1000) + gap.start,
+                })),
+              }));
+              
+              setBatchSegments(prev => [...prev, ...adjustedParagraphs].sort((a, b) => a.start - b.start));
+              break;
+            } else if (pollData.status === 'error') {
+              console.error(`Transcription error for gap ${gap.start}-${gap.end}:`, pollData.error);
+              break;
+            }
+            
+            // Still processing, continue polling
+          }
+        }
+      } catch (err) {
+        console.error(`Error transcribing gap ${gap.start}-${gap.end}:`, err);
+      }
+    }
+
+    setIsBackfilling(false);
+    setBackfillProgress('');
+  }, [kalturaId]);
+
   const startStreaming = useCallback(async () => {
     if (!player || isStreaming) return;
     setError(null);
+    
+    // Auto-play the video to enable audio capture
+    player.play();
+    
+    setStatus('Checking existing transcripts...');
+
+    // Start backfilling in parallel (don't await)
+    (async () => {
+      try {
+        // Wait for video to seek to live position (poll until non-zero)
+        let videoTime = 0;
+        for (let i = 0; i < 20; i++) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          videoTime = player.currentTime || 0;
+          if (videoTime > 0) break;
+        }
+        console.log('Video current time for backfill:', videoTime);
+        
+        // Check for existing segments and gaps
+        const segmentsResponse = await fetch('/api/transcribe/segments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kalturaId,
+            currentTime: videoTime,
+            totalDuration: videoTime,
+            isComplete: false,
+          }),
+        });
+
+        if (segmentsResponse.ok) {
+          const segmentData = await segmentsResponse.json();
+          
+          // Load existing segments immediately
+          if (segmentData.existingSegments && segmentData.existingSegments.length > 0) {
+            console.log('Loading existing segments:', segmentData.existingSegments.length);
+            setBatchSegments(segmentData.existingSegments);
+          }
+          
+          if (segmentData.gaps && segmentData.gaps.length > 0) {
+            console.log(`Found ${segmentData.gaps.length} gap(s) to transcribe`);
+            await backfillGaps(segmentData.gaps);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check/backfill segments:', err);
+      }
+    })();
+
     setStatus('Connecting...');
 
     try {
@@ -169,7 +345,7 @@ export function LiveTranscription({ player, isLive }: LiveTranscriptionProps) {
         wsRef.current.close();
       }
     }
-  }, [player, isStreaming]);
+  }, [player, isStreaming, kalturaId, backfillGaps]);
 
   const stopStreaming = useCallback(() => {
     if (wsRef.current) {
@@ -270,18 +446,46 @@ export function LiveTranscription({ player, isLive }: LiveTranscriptionProps) {
         </div>
       )}
 
-      {isStreaming && (
+      {isBackfilling && (
+        <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded px-3 py-2 mb-3">
+          <div className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <span className="font-medium">Loading past portion:</span>
+            <span className="text-blue-600 dark:text-blue-400">{backfillProgress}</span>
+          </div>
+        </div>
+      )}
+
+      {(isStreaming || batchSegments.length > 0) && (
         <div className="space-y-3">
+          {/* Display batch segments */}
+          {batchSegments.map((para, i) => (
+            <div key={`batch-${i}`} className="p-3 bg-muted/70 rounded">
+              <div className="text-xs text-muted-foreground mb-1 flex items-center gap-2">
+                <span>[{Math.floor(para.start)}s]</span>
+                <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Previous</span>
+              </div>
+              <div className="text-sm">{para.text}</div>
+            </div>
+          ))}
+          
+          {/* Display live streaming turns */}
           {turns.map((turn, i) => (
-            <div key={i} className="p-3 bg-muted rounded">
-              <div className="text-xs text-muted-foreground mb-1">
-                {turn.timestamp !== undefined && `[${Math.floor(turn.timestamp)}s]`}
+            <div key={`live-${i}`} className="p-3 bg-muted rounded">
+              <div className="text-xs text-muted-foreground mb-1 flex items-center gap-2">
+                {turn.timestamp !== undefined && <span>[{Math.floor(turn.timestamp)}s]</span>}
+                <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live</span>
               </div>
               <div className="text-sm">{turn.transcript}</div>
             </div>
           ))}
+          
+          {/* Display current streaming transcript */}
           {currentTranscript && (
             <div className="p-3 bg-muted/50 rounded border border-primary/30">
+              <div className="text-xs text-muted-foreground mb-1 flex items-center gap-2">
+                <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live</span>
+              </div>
               <div className="text-sm text-muted-foreground italic">{currentTranscript}</div>
             </div>
           )}

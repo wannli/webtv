@@ -191,6 +191,30 @@ export function TranscriptionPanel({ kalturaId, player }: TranscriptionPanelProp
     setError(null);
     
     try {
+      // For finished videos, check if we have a complete transcript
+      if (!force) {
+        const segmentsResponse = await fetch('/api/transcribe/segments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            kalturaId,
+            currentTime: 0,
+            totalDuration: 0, // Will be calculated from video
+            isComplete: true,
+          }),
+        });
+
+        if (segmentsResponse.ok) {
+          const segmentData = await segmentsResponse.json();
+          
+          // If partial transcripts exist but no complete one, force retranscription
+          if (segmentData.needsFullRetranscription) {
+            console.log('Partial transcripts found, retranscribing completely');
+            force = true;
+          }
+        }
+      }
+
       const response = await fetch('/api/transcribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
