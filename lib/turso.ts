@@ -85,7 +85,7 @@ export async function getTranscript(
   await ensureInitialized();
   
   let query: string;
-  const args: any[] = [entryId];
+  const args: (string | number)[] = [entryId];
   
   if (startTime !== undefined && endTime !== undefined) {
     query = `
