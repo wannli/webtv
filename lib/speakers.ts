@@ -5,6 +5,7 @@ export interface SpeakerInfo {
   function: string | null;
   affiliation: string | null;
   group: string | null;
+  is_off_record?: boolean;
 }
 
 // Maps paragraph index (as string) to speaker info

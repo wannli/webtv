@@ -15,6 +15,7 @@ const ParagraphSpeakerMapping = z.object({
     affiliation: z.string().nullable(),
     group: z.string().nullable(),
     has_multiple_speakers: z.boolean(),
+    is_off_record: z.boolean(),
   })),
 });
 
@@ -398,6 +399,27 @@ NOT mixed speakers:
 
 When uncertain, flag it - we'll verify during resegmentation. The goal is to catch genuine multi-speaker paragraphs while avoiding obvious false positives.
 
+OFF-RECORD CONTENT DETECTION:
+Mark is_off_record = true for paragraphs that are clearly NOT part of the formal meeting/proceeding.
+
+ONLY mark paragraphs at the VERY START or VERY END of the transcript. NEVER mark middle paragraphs.
+
+Examples of off-record content:
+  - Pre-meeting small talk, audio testing, technical checks
+  - "Can you hear me?", "Testing, testing", "Is the mic on?"
+  - Private conversations before the meeting starts
+  - Gibberish, single words with no context (e.g., just "It", just "Okay")
+  - Post-meeting informal remarks clearly after formal closing
+  - Background noise transcribed as words
+
+Only mark as off-record when it's VERY CLEAR the content is not part of the official proceeding.
+If uncertain, mark as false - better to include too much than exclude formal content.
+
+Typical patterns:
+  - First 1-3 paragraphs: check if they're pre-meeting chatter before formal opening
+  - Last 1-3 paragraphs: check if they're post-meeting remarks after formal closing
+  - Middle paragraphs: ALWAYS mark is_off_record = false
+
 ${IDENTIFICATION_RULES}
 
 ${COMMON_ABBREVIATIONS}
@@ -405,6 +427,8 @@ ${COMMON_ABBREVIATIONS}
 ${SCHEMA_DEFINITIONS}
 
 has_multiple_speakers: Boolean - Does this paragraph contain words spoken by multiple different people? True if multiple speakers' words are mixed together, false if one person speaks the entire paragraph.
+
+is_off_record: Boolean - Is this paragraph clearly NOT part of the formal meeting? Only true for paragraphs at the very start/end that are obviously pre-meeting chatter, audio tests, gibberish, or post-meeting remarks. When uncertain, use false.
 `,
       },
       {
@@ -424,6 +448,14 @@ ${transcriptParts.join('\n\n')}`,
   const parsed = JSON.parse(result) as z.infer<typeof ParagraphSpeakerMapping>;
   console.log(`  ✓ Initial identification complete`);
 
+  // Log off-record paragraphs
+  const offRecord = parsed.paragraphs
+    .filter(p => p.is_off_record)
+    .map(p => p.index);
+  if (offRecord.length > 0) {
+    console.log(`  ℹ Found ${offRecord.length} off-record paragraph(s): [${offRecord.join(', ')}]`);
+  }
+
   // Collect paragraphs needing resegmentation
   const toResegment = parsed.paragraphs
     .filter(p => p.has_multiple_speakers)
@@ -439,6 +471,7 @@ ${transcriptParts.join('\n\n')}`,
       function: para.function,
       affiliation: para.affiliation,
       group: para.group,
+      is_off_record: para.is_off_record || undefined,
     };
   });
 
@@ -545,6 +578,34 @@ ${transcriptParts.join('\n\n')}`,
       }, null, 2));
       console.log(`  → Wrote after file: ${afterFile}`);
     }
+  }
+
+  // Filter out off-record paragraphs
+  const offRecordIndices = Object.keys(finalMapping)
+    .filter(idx => finalMapping[idx].is_off_record)
+    .map(idx => parseInt(idx));
+  
+  if (offRecordIndices.length > 0) {
+    console.log(`  → Filtering out ${offRecordIndices.length} off-record paragraph(s): [${offRecordIndices.join(', ')}]`);
+    
+    // Remove from paragraphs array
+    const filteredParagraphs: ParagraphInput[] = [];
+    const filteredMapping: SpeakerMapping = {};
+    let newIndex = 0;
+    
+    for (let i = 0; i < finalParagraphs.length; i++) {
+      if (!finalMapping[i.toString()].is_off_record) {
+        filteredParagraphs.push(finalParagraphs[i]);
+        const speaker = { ...finalMapping[i.toString()] };
+        delete speaker.is_off_record; // Remove flag from final output
+        filteredMapping[newIndex.toString()] = speaker;
+        newIndex++;
+      }
+    }
+    
+    finalParagraphs = filteredParagraphs;
+    finalMapping = filteredMapping;
+    console.log(`  ✓ Kept ${finalParagraphs.length} on-record paragraphs`);
   }
 
   // Save to database
