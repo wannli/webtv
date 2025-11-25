@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { getScheduleVideos } from '../lib/un-api';
+import { getScheduleVideos, videoToRecord } from '../lib/un-api';
 import { saveVideo, getVideoByAssetId, updateVideoEntryId } from '../lib/turso';
 import { extractKalturaId } from '../lib/kaltura';
 
@@ -83,24 +83,16 @@ async function main() {
       // Check if we already have this video cached
       const existing = await getVideoByAssetId(video.id);
       
+      // Convert video to record format (handles duration parsing)
+      const record = videoToRecord(video);
+      
+      // Preserve existing entry_id if available
+      if (existing?.entry_id) {
+        record.entry_id = existing.entry_id;
+      }
+      
       // Save/update video metadata
-      await saveVideo({
-        asset_id: video.id,
-        entry_id: existing?.entry_id || null,
-        title: video.title,
-        clean_title: video.cleanTitle,
-        date: video.date,
-        scheduled_time: video.scheduledTime,
-        duration: video.duration ? parseInt(video.duration.replace(/[^\d]/g, '')) : null,
-        url: video.url,
-        body: video.body,
-        category: video.category,
-        event_code: video.eventCode,
-        event_type: video.eventType,
-        session_number: video.sessionNumber,
-        part_number: video.partNumber !== null ? String(video.partNumber) : null,
-        last_seen: new Date().toISOString().split('T')[0],
-      });
+      await saveVideo(record);
       savedCount++;
 
       // If we don't have an entry_id yet, try to resolve it

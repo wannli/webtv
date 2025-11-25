@@ -35,7 +35,21 @@ function formatDate(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
-function videoToRecord(video: Video): Omit<VideoRecord, 'created_at' | 'updated_at'> {
+export function videoToRecord(video: Video): Omit<VideoRecord, 'created_at' | 'updated_at'> {
+  // Parse duration: can be "HH:MM:SS" or "XX min" format, convert to seconds
+  let durationSeconds: number | null = null;
+  if (video.duration) {
+    if (video.duration.includes(':')) {
+      // HH:MM:SS format
+      const [hours, minutes, seconds] = video.duration.split(':').map(Number);
+      durationSeconds = hours * 3600 + minutes * 60 + seconds;
+    } else {
+      // "XX min" format - extract number and convert to seconds
+      const minutes = parseInt(video.duration.replace(/[^\d]/g, ''));
+      durationSeconds = minutes * 60;
+    }
+  }
+  
   return {
     asset_id: video.id,
     entry_id: null, // Will be resolved later
@@ -43,7 +57,7 @@ function videoToRecord(video: Video): Omit<VideoRecord, 'created_at' | 'updated_
     clean_title: video.cleanTitle,
     date: video.date,
     scheduled_time: video.scheduledTime,
-    duration: video.duration ? parseInt(video.duration.replace(/[^\d]/g, '')) : null,
+    duration: durationSeconds,
     url: video.url,
     body: video.body,
     category: video.category,
@@ -72,7 +86,7 @@ function recordToVideo(record: VideoRecord, hasTranscript: boolean): Video {
     title: record.title,
     cleanTitle: record.clean_title || record.title,
     category: record.category || '',
-    duration: record.duration ? `${record.duration} min` : '',
+    duration: durationHMS, // Already formatted as HH:MM:SS
     date: record.date,
     scheduledTime: record.scheduled_time,
     status,
