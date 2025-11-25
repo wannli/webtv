@@ -43,6 +43,7 @@ export async function POST(request: NextRequest) {
           paragraphCount: paragraphsData?.paragraphs?.length || 0
         });
         // Update Turso with completed transcript
+        // Initially save with empty statements - speaker identification will populate it later
         await saveTranscript(
           row.entry_id as string,
           transcriptId,
@@ -51,7 +52,7 @@ export async function POST(request: NextRequest) {
           row.audio_url as string,
           'completed',
           transcript.language_code,
-          { paragraphs: paragraphsData?.paragraphs || [] }
+          { statements: [], topics: {} }
         );
         console.log('✓ Saved to Turso successfully');
       } else {
