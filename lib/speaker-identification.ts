@@ -51,7 +51,9 @@ const IDENTIFICATION_RULES = `IDENTIFICATION RULES:
 - Extract both personal names AND official functions when available
 - For country representatives, provide ISO 3166-1 alpha-3 country codes (e.g., PRY, USA, CHN)
 - For UN bodies/agencies, use standard abbreviations (e.g., ACABQ, UNICEF, UNDP, OHCHR, 5th Committee)
-- If a representative is speaking on behalf of a group (e.g., G77 + China, EU), capture that group code
+- CRITICAL: Only fill "group" when speaker EXPLICITLY says they are speaking ON BEHALF OF that group
+  - YES: "on behalf of the G77 + China", "speaking for the EU", "representing the Africa Group"
+  - NO: "aligns with", "supports the statement by", "agrees with", "echoes", "associates with"
 - If identity cannot be determined, return all null values
 - Only use information literally in the text (no world knowledge)
 - Fix transcription errors: "UN80 Initiative" (not "UNAT", "UNA", "UNAT Initiative", etc.)
@@ -102,7 +104,7 @@ function: Function/title. Be concise, use canonical abbreviations. E.g. "SG", "P
 
 affiliation: For country representatives, use ISO 3166-1 alpha-3 country codes of their country, e.g. "PRY", "KEN". For organizations use the canonical abbreviation of the organization, e.g. "OECD", "OHCHR", "UN Secretariat", "GA", "5th Committee", "UN80 Initiative". Use null if unknown/not applicable.
 
-group: If applicable, group of countries that a country representative is speaking on behalf of. Use the canonical abbreviation, e.g. "G77 + China", "EU", "AU". Use null if not applicable.`;
+group: If the speaker EXPLICITLY states they are speaking ON BEHALF OF a group (not merely supporting, aligning with, or agreeing with). Use canonical abbreviation, e.g. "G77 + China", "EU", "AU". Use null if not speaking on behalf of a group.`;
 
 export interface ParagraphWord {
   text: string;
