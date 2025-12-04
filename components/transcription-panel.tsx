@@ -991,6 +991,18 @@ export function TranscriptionPanel({ kalturaId, player, video }: TranscriptionPa
           {segments.map((segment, segmentIndex) => {
             const isSegmentActive = segmentIndex === activeSegmentIndex;
             const firstStmtIndex = segment.statementIndices[0] ?? 0;
+            
+            // Skip segment if in highlights-only mode and no content would be visible
+            if (topicCollapsed && selectedTopic) {
+              const hasAnyHighlight = segment.statementIndices.some(stmtIdx => {
+                const stmt = statements?.[stmtIdx];
+                return stmt?.paragraphs.some(para =>
+                  para.sentences.some(sent => sent.topic_keys?.includes(selectedTopic))
+                );
+              });
+              if (!hasAnyHighlight) return null;
+            }
+            
             return (
               <div 
                 key={segmentIndex} 
