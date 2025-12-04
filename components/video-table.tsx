@@ -111,6 +111,48 @@ function CheckboxFilter({ column }: { column: Column<Video, unknown> }) {
   );
 }
 
+// Helper to format date/time for card view
+function formatDateTime(scheduledTime: string | null, date: string): string {
+  const d = scheduledTime ? parseUNTimestamp(scheduledTime) : new Date(date);
+  const now = new Date();
+  const today = getLocalMidnight(now);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const videoDate = getLocalMidnight(d);
+  
+  let dateStr;
+  if (videoDate.getTime() === tomorrow.getTime()) {
+    dateStr = 'Tomorrow';
+  } else if (videoDate.getTime() === today.getTime()) {
+    dateStr = 'Today';
+  } else if (videoDate.getTime() === yesterday.getTime()) {
+    dateStr = 'Yesterday';
+  } else {
+    dateStr = d.toLocaleDateString('en-US', { 
+      weekday: 'short', 
+      month: 'short', 
+      day: 'numeric'
+    });
+  }
+  
+  if (!scheduledTime) return dateStr;
+  
+  const timeStr = d.toLocaleTimeString('en-US', { 
+    hour: 'numeric', 
+    minute: '2-digit', 
+    hour12: true
+  });
+  return `${dateStr} ${timeStr}`;
+}
+
+// Helper to format duration for card view
+function formatDuration(duration: string): string | null {
+  if (!duration || duration === '00:00:00') return null;
+  return duration.replace(/^0+:?/, '').replace(/^0/, '');
+}
+
 export function VideoTable({ videos }: { videos: Video[] }) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -390,9 +432,6 @@ export function VideoTable({ videos }: { videos: Video[] }) {
     },
   });
 
-  // Exclude internal filters (status for scheduled) from "hasFilters" display
-  const userFilters = columnFilters.filter(f => f.id !== 'status');
-  const hasFilters = globalFilter || userFilters.length > 0;
   
   // Toggle showing scheduled videos - also update sorting
   const toggleScheduled = () => {
@@ -411,7 +450,8 @@ export function VideoTable({ videos }: { videos: Video[] }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-4 items-center">
+      {/* Desktop: Search bar with count */}
+      <div className="hidden lg:flex flex-wrap gap-4 items-center">
         <input
           type="text"
           placeholder="Search all columns..."
@@ -428,40 +468,117 @@ export function VideoTable({ videos }: { videos: Video[] }) {
           />
           <span className="text-muted-foreground">Show scheduled</span>
         </label>
-        {hasFilters && (
-          <button
-            onClick={() => {
-              setGlobalFilter('');
-              setColumnFilters(showScheduled ? [] : [{ id: 'status', value: 'hide_scheduled' }]);
-            }}
-            className="px-4 py-2 text-sm border rounded-lg hover:bg-muted"
-          >
-            Clear Filters
-          </button>
-        )}
         <div className="text-sm text-muted-foreground whitespace-nowrap ml-auto">
           {table.getFilteredRowModel().rows.length} of {videos.length} videos
         </div>
       </div>
       
-      {userFilters.length > 0 && (
-        <div className="flex flex-wrap gap-2 text-xs">
-          {userFilters.map((filter) => (
-            <div key={filter.id} className="bg-muted px-3 py-1 rounded-full flex items-center gap-2">
-              <span className="font-medium">{filter.id}:</span>
-              <span>{String(filter.value)}</span>
-              <button
-                onClick={() => table.getColumn(filter.id)?.setFilterValue(undefined)}
-                className="hover:text-primary"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+      {/* Mobile: All filters grouped */}
+      <div className="lg:hidden space-y-3">
+        <input
+          type="text"
+          placeholder="Search..."
+          value={globalFilter}
+          onChange={(e) => setGlobalFilter(e.target.value)}
+          className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+        />
+        <div className="flex flex-wrap gap-2">
+          <select
+            value={(table.getColumn('scheduledTime')?.getFilterValue() as string) || ''}
+            onChange={(e) => table.getColumn('scheduledTime')?.setFilterValue(e.target.value || undefined)}
+            className="flex-1 min-w-[120px] px-3 py-2 text-sm border rounded-lg bg-background"
+          >
+            <option value="">All Dates</option>
+            {uniqueDates.map((date) => (
+              <option key={date} value={date}>{date}</option>
+            ))}
+          </select>
+          <select
+            value={(table.getColumn('body')?.getFilterValue() as string) || ''}
+            onChange={(e) => table.getColumn('body')?.setFilterValue(e.target.value || undefined)}
+            className="flex-1 min-w-[120px] px-3 py-2 text-sm border rounded-lg bg-background"
+          >
+            <option value="">All Bodies</option>
+            {uniqueBodies.map((body) => (
+              <option key={body} value={body}>{body}</option>
+            ))}
+          </select>
+          <select
+            value={(table.getColumn('category')?.getFilterValue() as string) || ''}
+            onChange={(e) => table.getColumn('category')?.setFilterValue(e.target.value || undefined)}
+            className="flex-1 min-w-[120px] px-3 py-2 text-sm border rounded-lg bg-background"
+          >
+            <option value="">All Categories</option>
+            {uniqueCategories.map((cat) => (
+              <option key={cat} value={cat}>{cat}</option>
+            ))}
+          </select>
         </div>
-      )}
+        <div className="flex flex-wrap gap-3 items-center">
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showScheduled}
+              onChange={toggleScheduled}
+              className="w-4 h-4 rounded border-gray-300"
+            />
+            <span className="text-muted-foreground">Show scheduled</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={(table.getColumn('hasTranscript')?.getFilterValue() as boolean) === true}
+              onChange={(e) => table.getColumn('hasTranscript')?.setFilterValue(e.target.checked ? true : undefined)}
+              className="w-4 h-4 rounded border-gray-300"
+            />
+            <span className="text-muted-foreground">With transcript</span>
+          </label>
+          <div className="text-sm text-muted-foreground ml-auto">
+            {table.getFilteredRowModel().rows.length} of {videos.length}
+          </div>
+        </div>
+      </div>
 
-      <div className="border rounded-lg overflow-hidden">
+      {/* Mobile Card View */}
+      <div className="lg:hidden grid gap-3">
+        {table.getRowModel().rows.map((row) => {
+          const video = row.original;
+          const isLive = video.status === 'live';
+          const isScheduled = video.status === 'scheduled';
+          const duration = formatDuration(video.duration);
+          const dateTime = formatDateTime(video.scheduledTime, video.date);
+          
+          return (
+            <a
+              key={row.id}
+              href={`/video/${encodeURIComponent(video.id)}`}
+              className={`block p-4 border rounded-lg hover:bg-muted/50 transition-colors ${isScheduled ? 'opacity-50' : ''}`}
+            >
+              <div className="flex justify-between items-start gap-3">
+                <span className={`text-sm leading-tight ${isScheduled ? 'text-muted-foreground' : 'text-primary'}`}>
+                  {video.cleanTitle}
+                </span>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {video.hasTranscript && <span className="text-green-600 text-sm">✓</span>}
+                  {isLive ? (
+                    <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  ) : duration && (
+                    <span className="text-xs text-muted-foreground tabular-nums">{duration}</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-muted-foreground">
+                <span>{dateTime}</span>
+                {video.body && <span>• {video.body}</span>}
+                {video.category && <span>• {video.category}</span>}
+              </div>
+            </a>
+          );
+        })}
+      </div>
+
+      {/* Desktop Table View */}
+      <div className="hidden lg:block border rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted">
