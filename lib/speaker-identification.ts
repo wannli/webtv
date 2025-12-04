@@ -565,11 +565,19 @@ async function resegmentParagraph(
   contextParas: Array<{ para: ParagraphInput, speaker: SpeakerInfo, position: 'before' | 'current' | 'after' }>,
   paragraphIndex?: number,
 ): Promise<{ segments: ParagraphInput[], speakers: SpeakerInfo[] }> {
+  const formatSpeaker = (s: SpeakerInfo) => {
+    const parts = [];
+    if (s?.name) parts.push(`name: "${s.name}"`);
+    if (s?.function) parts.push(`function: "${s.function}"`);
+    if (s?.affiliation) parts.push(`affiliation: "${s.affiliation}"`);
+    if (s?.group) parts.push(`group: "${s.group}"`);
+    return parts.length > 0 ? `{ ${parts.join(', ')} }` : '{ unknown }';
+  };
+  
   const formatPara = (p: ParagraphInput, s: SpeakerInfo, label: string) => {
     const text = p.words.map(w => w.text).join(' ');
-    const speakerStr = s?.name || 'Unknown';
     const preview = text.length > 150 ? text.substring(0, 150) + '...' : text;
-    return `${label}:\nSpeaker: ${speakerStr}\nText: ${preview}`;
+    return `${label}:\nSpeaker: ${formatSpeaker(s)}\nText: ${preview}`;
   };
 
   const beforeParas = contextParas.filter(c => c.position === 'before');
@@ -577,13 +585,23 @@ async function resegmentParagraph(
   const afterParas = contextParas.filter(c => c.position === 'after');
   const currentSpeaker = currentPara.speaker;
 
+  // Collect all known speakers from context for reference
+  const knownSpeakers = contextParas
+    .filter(c => c.speaker?.name)
+    .map(c => formatSpeaker(c.speaker));
+  const uniqueKnownSpeakers = [...new Set(knownSpeakers)];
+
   const contextParts = [
     ...beforeParas.reverse().map((c, i) => formatPara(c.para, c.speaker, `BEFORE-${beforeParas.length - i}`)),
-    `CURRENT (TO SPLIT):\nSpeaker: ${currentSpeaker.name || 'Unknown'}\nText: ${paragraph.text}`,
+    `CURRENT (TO SPLIT):\nSpeaker: ${formatSpeaker(currentSpeaker)}\nText: ${paragraph.text}`,
     ...afterParas.map((c, i) => formatPara(c.para, c.speaker, `AFTER+${i + 1}`)),
   ];
 
   const context = contextParts.join('\n\n');
+  
+  const knownSpeakersSection = uniqueKnownSpeakers.length > 0 
+    ? `\n\nKNOWN SPEAKERS (from previous identification - REUSE these exact labels when applicable):\n${uniqueKnownSpeakers.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+    : '';
 
   const completion = await client.chat.completions.create({
     model: 'gpt-5',
@@ -638,7 +656,13 @@ DECISION PROCESS:
    - Identify who is speaking each segment
    - Text integrity: concatenated segments MUST equal original exactly
 
-5. Set confidence and reason:
+5. IMPORTANT - Reuse known speaker labels:
+   - A list of KNOWN SPEAKERS (already identified) is provided below the context
+   - When a segment is spoken by a known speaker, COPY their exact name/function/affiliation/group
+   - Do NOT re-identify or vary the labels - use them exactly as provided
+   - This ensures consistency across the transcript
+
+6. Set confidence and reason:
    - confidence: "high" if clear speaker changes, "medium" if somewhat ambiguous, "low" if uncertain
    - reason: Brief explanation focused on WHO is speaking and why you're splitting/not splitting
 
@@ -664,12 +688,14 @@ text: EXACT text of each segment, copied character-by-character from the CURRENT
         role: 'user',
         content: `Analyze the CURRENT paragraph in context and determine if it should be split:
 
-${context}
+${context}${knownSpeakersSection}
 
 The BEFORE and AFTER paragraphs provide context about the conversation flow. Use them to understand:
 - Who was speaking before
 - Who speaks after
 - Whether the CURRENT paragraph likely contains a transition between these speakers
+
+IMPORTANT: When identifying speakers for segments, REUSE the exact labels from KNOWN SPEAKERS above. Do not vary or re-identify speakers that are already known.
 
 If you determine the CURRENT paragraph should be split, copy the exact text from the "Text:" line of the CURRENT paragraph (not from BEFORE/AFTER paragraphs) and split it at speaker boundaries, returning each segment with its speaker identification.`,
       },
@@ -1098,9 +1124,13 @@ ${transcriptParts.join('\n\n')}`,
         });
         console.log(`  ✓ Saved topics`);
       }
+      
+      // Mark as completed
+      await updateTranscriptStatus(transcriptId, 'completed');
     } catch (error) {
       console.warn(`  ⚠ Failed to analyze topics:`, error instanceof Error ? error.message : error);
-      // Keep the statements without topics - don't fail completely
+      // Keep the statements without topics - still mark as completed
+      await updateTranscriptStatus(transcriptId, 'completed');
     }
   }
 

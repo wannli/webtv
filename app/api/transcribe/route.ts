@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTranscript, saveTranscript, deleteTranscriptsForEntry } from '@/lib/turso';
 import { getKalturaAudioUrl, submitTranscription } from '@/lib/transcription';
+import { getSpeakerMapping } from '@/lib/speakers';
 
 export async function POST(request: NextRequest) {
   try {
@@ -45,21 +46,23 @@ export async function POST(request: NextRequest) {
             console.error('Error triggering speaker identification:', err);
           });
           
-          console.log('✓ Speaker identification triggered, returning processing status');
+          console.log('✓ Speaker identification triggered');
           
           // Return the transcript ID so frontend can poll for completion
           return NextResponse.json({
             transcriptId: cached.transcript_id,
-            status: 'processing',
+            stage: 'identifying_speakers',
           });
         }
         
+        const speakerMappings = await getSpeakerMapping(cached.transcript_id);
         return NextResponse.json({
           statements: cached.content.statements,
           language: cached.language_code,
           cached: true,
           transcriptId: cached.transcript_id,
           topics: cached.content.topics || {},
+          speakerMappings: speakerMappings || {},
         });
       }
     } else {
@@ -117,7 +120,7 @@ export async function POST(request: NextRequest) {
       isSegmentRequest ? startTime : null,
       isSegmentRequest ? endTime : null,
       audioUrl,
-      'processing',
+      'transcribing',
       null,
       { statements: [], topics: {} }
     );
@@ -126,7 +129,7 @@ export async function POST(request: NextRequest) {
     // Return transcript ID immediately for client-side polling
     return NextResponse.json({
       transcriptId,
-      status: 'processing',
+      stage: 'transcribing',
       segmentStart: isSegmentRequest ? startTime : undefined,
       segmentEnd: isSegmentRequest ? endTime : undefined,
     });

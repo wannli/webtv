@@ -16,11 +16,12 @@ import {
 } from '@tanstack/react-table';
 import { Video } from '@/lib/un-api';
 
-// Extend column meta to include filter components
+// Extend column meta to include filter components and alignment
 declare module '@tanstack/react-table' {
   interface ColumnMeta<TData, TValue> {
     filterComponent?: (props: { column: Column<TData, TValue>; options?: string[] }) => React.JSX.Element;
     filterOptions?: string[];
+    align?: 'left' | 'right' | 'center';
   }
 }
 

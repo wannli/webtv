@@ -58,7 +58,8 @@ function parseParagraphs(row: TranscriptRow) {
   const content = typeof row.content === 'string'
     ? JSON.parse(row.content)
     : row.content;
-  return (content?.paragraphs || []) as ParagraphInput[];
+  // Try raw_paragraphs first (new schema), fall back to paragraphs (old schema)
+  return (content?.raw_paragraphs || content?.paragraphs || []) as ParagraphInput[];
 }
 
 async function loadTargets(arg: string) {
