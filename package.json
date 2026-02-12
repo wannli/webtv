@@ -9,7 +9,8 @@
     "lint": "next lint",
     "reidentify": "tsx scripts/reidentify.ts",
     "retranscribe": "tsx scripts/retranscribe.ts",
-    "sync-videos": "tsx scripts/sync-videos.ts"
+    "sync-videos": "tsx scripts/sync-videos.ts",
+    "fetch-video-metadata": "tsx scripts/fetch-video-metadata.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.0",
