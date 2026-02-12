@@ -10,7 +10,8 @@
     "reidentify": "tsx scripts/reidentify.ts",
     "retranscribe": "tsx scripts/retranscribe.ts",
     "sync-videos": "tsx scripts/sync-videos.ts",
-    "fetch-video-metadata": "tsx scripts/fetch-video-metadata.ts"
+    "fetch-video-metadata": "tsx scripts/fetch-video-metadata.ts",
+    "usage-report": "tsx scripts/usage-report.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.0",

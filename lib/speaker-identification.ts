@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { zodResponseFormat } from 'openai/helpers/zod';
 import { setSpeakerMapping, SpeakerInfo } from './speakers';
 import { getTranscriptById, updateTranscriptContent, updateTranscriptStatus } from './turso';
+import { trackOpenAIChatCompletion, UsageOperations, UsageStages } from './usage-tracking';
 import './load-env';
 // @ts-expect-error - no types available for sbd
 import sbd from 'sbd';
@@ -268,6 +269,7 @@ async function defineTopics(
   paragraphs: ParagraphInput[],
   speakerMapping: SpeakerMapping,
   client: AzureOpenAI,
+  transcriptId?: string,
 ): Promise<Record<string, { key: string; label: string; description: string }>> {
   console.log(`  → Defining topics...`);
 
@@ -292,9 +294,16 @@ async function defineTopics(
     return `[${index}] ${speakerLabel}: ${paragraph.text}`;
   });
 
-  const completion = await client.chat.completions.create({
+  const completion = await trackOpenAIChatCompletion({
+    client,
+    transcriptId,
+    stage: UsageStages.analyzingTopics,
+    operation: UsageOperations.openaiDefineTopics,
     model: 'gpt-5',
-    messages: [
+    requestMeta: { paragraph_count: paragraphs.length, substantive_statements: substantiveStatements.length },
+    request: {
+      model: 'gpt-5',
+      messages: [
       {
         role: 'system',
         content: `You are analyzing a UN proceedings transcript to identify main discussion topics.
@@ -324,8 +333,9 @@ OUTPUT:
 
 ${contextParts.join('\n\n')}`,
       },
-    ],
-    response_format: zodResponseFormat(TopicDefinitions, 'topics'),
+      ],
+      response_format: zodResponseFormat(TopicDefinitions, 'topics'),
+    },
   });
 
   const result = completion.choices[0]?.message?.content;
@@ -349,6 +359,7 @@ export async function analyzePropositions(
   paragraphs: ParagraphInput[],
   speakerMapping: SpeakerMapping,
   client: AzureOpenAI,
+  transcriptId?: string,
 ): Promise<Proposition[]> {
   console.log(`  → Analyzing propositions...`);
 
@@ -374,9 +385,16 @@ export async function analyzePropositions(
     return `[${index}] (${speakerLabel}) ${paragraph.text}`;
   });
 
-  const completion = await client.chat.completions.create({
+  const completion = await trackOpenAIChatCompletion({
+    client,
+    transcriptId,
+    stage: UsageStages.analyzingPropositions,
+    operation: UsageOperations.openaiAnalyzePropositions,
     model: 'gpt-5',
-    messages: [
+    requestMeta: { paragraph_count: paragraphs.length, substantive_statements: substantiveStatements.length },
+    request: {
+      model: 'gpt-5',
+      messages: [
       {
         role: 'system',
         content: `You are analyzing a UN proceedings transcript to identify key propositions and stakeholder positions.
@@ -422,8 +440,9 @@ RULES:
 
 ${transcriptParts.join('\n\n')}`,
       },
-    ],
-    response_format: zodResponseFormat(PropositionAnalysis, 'propositions'),
+      ],
+      response_format: zodResponseFormat(PropositionAnalysis, 'propositions'),
+    },
   });
 
   const result = completion.choices[0]?.message?.content;
@@ -466,6 +485,7 @@ async function _tagParagraphsWithTopics(
   topics: Record<string, { key: string; description: string; color: string }>,
   speakerMapping: SpeakerMapping,
   client: AzureOpenAI,
+  transcriptId?: string,
 ): Promise<Record<string, string[]>> {
   console.log(`  → Tagging paragraphs with topics...`);
 
@@ -513,9 +533,16 @@ async function _tagParagraphsWithTopics(
     }
 
     try {
-      const completion = await client.chat.completions.create({
+      const completion = await trackOpenAIChatCompletion({
+        client,
+        transcriptId,
+        stage: UsageStages.analyzingTopics,
+        operation: UsageOperations.openaiTagParagraphTopics,
         model: 'gpt-5',
-        messages: [
+        requestMeta: { paragraph_index: idx, paragraph_count: paragraphs.length },
+        request: {
+          model: 'gpt-5',
+          messages: [
           {
             role: 'system',
             content: `You are tagging UN proceeding statements with relevant topics.
@@ -540,8 +567,9 @@ RULES:
 
 ${contextParts.join('\n\n')}`,
           },
-        ],
-        response_format: zodResponseFormat(ParagraphTopicTags, 'tags'),
+          ],
+          response_format: zodResponseFormat(ParagraphTopicTags, 'tags'),
+        },
       });
 
       const result = completion.choices[0]?.message?.content;
@@ -574,7 +602,8 @@ async function tagSentencesWithTopics(
   statements: StatementWithSentences[],
   topics: Record<string, { key: string; label: string; description: string }>,
   speakerMapping: SpeakerMapping,
-  client: AzureOpenAI
+  client: AzureOpenAI,
+  transcriptId?: string,
 ): Promise<StatementWithSentences[]> {
   console.log(`  → Tagging sentences with topics...`);
 
@@ -642,9 +671,21 @@ async function tagSentencesWithTopics(
     ].join('\n');
     
     try {
-      const completion = await client.chat.completions.create({
+      const completion = await trackOpenAIChatCompletion({
+        client,
+        transcriptId,
+        stage: UsageStages.taggingSentences,
+        operation: UsageOperations.openaiTagSentenceTopics,
         model: 'gpt-5',
-        messages: [{
+        requestMeta: {
+          sentence_global_index: globalIdx,
+          statement_index: sent.statementIdx,
+          paragraph_index: sent.paragraphIdx,
+          sentence_index: sent.sentenceIdx,
+        },
+        request: {
+          model: 'gpt-5',
+          messages: [{
           role: 'system',
           content: `You are categorizing UN proceeding sentences by topic.
 
@@ -667,8 +708,9 @@ RULES:
           content: `Which topics (if any) are discussed in the [CURRENT] sentence?
 
 ${numberedSentences}`,
-        }],
-        response_format: zodResponseFormat(SentenceTopicResponse, 'sentence_topics'),
+          }],
+          response_format: zodResponseFormat(SentenceTopicResponse, 'sentence_topics'),
+        },
       });
       
       const result = completion.choices[0]?.message?.content;
@@ -710,6 +752,7 @@ async function resegmentParagraph(
   paragraph: ParagraphInput,
   contextParas: Array<{ para: ParagraphInput, speaker: SpeakerInfo, position: 'before' | 'current' | 'after' }>,
   paragraphIndex?: number,
+  transcriptId?: string,
 ): Promise<{ segments: ParagraphInput[], speakers: SpeakerInfo[] }> {
   const formatSpeaker = (s: SpeakerInfo) => {
     const parts = [];
@@ -749,9 +792,16 @@ async function resegmentParagraph(
     ? `\n\nKNOWN SPEAKERS (from previous identification - REUSE these exact labels when applicable):\n${uniqueKnownSpeakers.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
     : '';
 
-  const completion = await client.chat.completions.create({
+  const completion = await trackOpenAIChatCompletion({
+    client,
+    transcriptId,
+    stage: UsageStages.resegmenting,
+    operation: UsageOperations.openaiResegmentParagraph,
     model: 'gpt-5',
-    messages: [
+    requestMeta: { paragraph_index: paragraphIndex ?? null, context_size: contextParas.length },
+    request: {
+      model: 'gpt-5',
+      messages: [
       {
         role: 'system',
         content: `You are an expert at correcting speaker segmentation errors in UN proceedings transcripts.
@@ -845,8 +895,9 @@ IMPORTANT: When identifying speakers for segments, REUSE the exact labels from K
 
 If you determine the CURRENT paragraph should be split, copy the exact text from the "Text:" line of the CURRENT paragraph (not from BEFORE/AFTER paragraphs) and split it at speaker boundaries, returning each segment with its speaker identification.`,
       },
-    ],
-    response_format: zodResponseFormat(ResegmentationResult, 'resegmentation'),
+      ],
+      response_format: zodResponseFormat(ResegmentationResult, 'resegmentation'),
+    },
   });
 
   const result = completion.choices[0]?.message?.content;
@@ -959,9 +1010,16 @@ export async function identifySpeakers(
 
   const client = createOpenAIClient();
 
-  const completion = await client.chat.completions.create({
+  const completion = await trackOpenAIChatCompletion({
+    client,
+    transcriptId,
+    stage: UsageStages.identifyingSpeakers,
+    operation: UsageOperations.openaiInitialSpeakerMapping,
     model: 'gpt-5',
-    messages: [
+    requestMeta: { paragraph_count: paragraphs.length },
+    request: {
+      model: 'gpt-5',
+      messages: [
       {
         role: 'system',
         content: `You are an expert at identifying speakers in UN proceedings. For each paragraph in the transcript, extract the speaker's name, function/title, affiliation, and country-group information strictly from the context.
@@ -1046,8 +1104,9 @@ is_off_record: Boolean - Is this paragraph clearly NOT part of the formal meetin
 Transcript:
 ${transcriptParts.join('\n\n')}`,
       },
-    ],
-    response_format: zodResponseFormat(ParagraphSpeakerMapping, 'paragraph_speaker_mapping'),
+      ],
+      response_format: zodResponseFormat(ParagraphSpeakerMapping, 'paragraph_speaker_mapping'),
+    },
   });
 
   const result = completion.choices[0]?.message?.content;
@@ -1126,6 +1185,7 @@ ${transcriptParts.join('\n\n')}`,
         para,
         contextParas,
         idx,
+        transcriptId,
       ).then(result => ({ index: idx, ...result }));
     });
 
@@ -1257,12 +1317,12 @@ ${transcriptParts.join('\n\n')}`,
     console.log(`  → Analyzing topics...`);
     
     try {
-      topics = await defineTopics(finalParagraphs, finalMapping, client);
-      taggedStatements = await tagSentencesWithTopics(statementsWithSentences, topics, finalMapping, client);
+      topics = await defineTopics(finalParagraphs, finalMapping, client, transcriptId);
+      taggedStatements = await tagSentencesWithTopics(statementsWithSentences, topics, finalMapping, client, transcriptId);
       
       // Analyze propositions in parallel with saving topics
       console.log(`  → Analyzing propositions...`);
-      const propositions = await analyzePropositions(finalParagraphs, finalMapping, client);
+      const propositions = await analyzePropositions(finalParagraphs, finalMapping, client, transcriptId);
       
       // Save final result with topics and propositions
       const transcript = await getTranscriptById(transcriptId);
@@ -1287,4 +1347,3 @@ ${transcriptParts.join('\n\n')}`,
 
   return finalMapping;
 }
-

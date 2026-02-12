@@ -2,6 +2,8 @@ import { createClient } from '@libsql/client/web';
 import '@/lib/load-env';
 
 export type TranscriptStatus = 'transcribing' | 'transcribed' | 'identifying_speakers' | 'analyzing_topics' | 'completed' | 'error';
+export type ProcessingUsageProvider = 'openai' | 'assemblyai';
+export type ProcessingUsageStatus = 'success' | 'error';
 
 const REQUIRED_VARS = ['TURSO_DB', 'TURSO_TOKEN'] as const;
 
@@ -74,6 +76,43 @@ async function ensureInitialized() {
   await client.execute(`
     CREATE INDEX IF NOT EXISTS idx_videos_last_seen ON videos(last_seen)
   `);
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS processing_usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transcript_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      status TEXT NOT NULL,
+      model TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      cached_input_tokens INTEGER,
+      total_tokens INTEGER,
+      usage_hours REAL,
+      usage_seconds INTEGER,
+      usage_quantity_type TEXT,
+      usage_multiplier REAL,
+      rate_card_version TEXT,
+      base_rate_per_hour_usd REAL,
+      feature_rate_per_hour_usd REAL,
+      pricing_meta TEXT,
+      duration_ms INTEGER,
+      request_meta TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS idx_usage_transcript_id ON processing_usage_events(transcript_id)
+  `);
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS idx_usage_provider_stage ON processing_usage_events(provider, stage)
+  `);
+  await client.execute(`
+    CREATE INDEX IF NOT EXISTS idx_usage_created_at ON processing_usage_events(created_at)
+  `);
   // Add pipeline_lock column if it doesn't exist
   try {
     await client.execute(`ALTER TABLE transcripts ADD COLUMN pipeline_lock TEXT`);
@@ -142,6 +181,74 @@ export interface Transcript {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProcessingUsageEventInsert {
+  transcript_id: string;
+  provider: ProcessingUsageProvider;
+  stage: string;
+  operation: string;
+  status: ProcessingUsageStatus;
+  model?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  total_tokens?: number | null;
+  usage_hours?: number | null;
+  usage_seconds?: number | null;
+  usage_quantity_type?: string | null;
+  usage_multiplier?: number | null;
+  rate_card_version?: string | null;
+  base_rate_per_hour_usd?: number | null;
+  feature_rate_per_hour_usd?: number | null;
+  pricing_meta?: string | null;
+  duration_ms?: number | null;
+  request_meta?: string | null;
+  error_message?: string | null;
+}
+
+export interface ProcessingUsageEvent {
+  id: number;
+  transcript_id: string;
+  provider: ProcessingUsageProvider;
+  stage: string;
+  operation: string;
+  status: ProcessingUsageStatus;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  reasoning_tokens: number | null;
+  cached_input_tokens: number | null;
+  total_tokens: number | null;
+  usage_hours: number | null;
+  usage_seconds: number | null;
+  usage_quantity_type: string | null;
+  usage_multiplier: number | null;
+  rate_card_version: string | null;
+  base_rate_per_hour_usd: number | null;
+  feature_rate_per_hour_usd: number | null;
+  pricing_meta: string | null;
+  duration_ms: number | null;
+  request_meta: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface ProcessingUsageSummaryRow {
+  provider: ProcessingUsageProvider;
+  stage: string;
+  events: number;
+  success_events: number;
+  error_events: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  cached_input_tokens: number;
+  total_tokens: number;
+  usage_hours: number;
+  usage_seconds: number;
+  estimated_cost_usd: number;
 }
 
 export async function getTranscript(
@@ -290,7 +397,11 @@ export async function releasePipelineLock(transcriptId: string): Promise<void> {
 
 export async function deleteTranscript(transcriptId: string): Promise<void> {
   await ensureInitialized();
-  
+
+  await client.execute({
+    sql: 'DELETE FROM processing_usage_events WHERE transcript_id = ?',
+    args: [transcriptId],
+  });
   await client.execute({
     sql: 'DELETE FROM transcripts WHERE transcript_id = ?',
     args: [transcriptId]
@@ -299,11 +410,133 @@ export async function deleteTranscript(transcriptId: string): Promise<void> {
 
 export async function deleteTranscriptsForEntry(entryId: string): Promise<void> {
   await ensureInitialized();
-  
+
+  await client.execute({
+    sql: `DELETE FROM processing_usage_events WHERE transcript_id IN (
+      SELECT transcript_id FROM transcripts WHERE entry_id = ?
+    )`,
+    args: [entryId],
+  });
   await client.execute({
     sql: 'DELETE FROM transcripts WHERE entry_id = ?',
     args: [entryId]
   });
+}
+
+export async function insertProcessingUsageEvent(event: ProcessingUsageEventInsert): Promise<void> {
+  await ensureInitialized();
+  await client.execute({
+    sql: `INSERT INTO processing_usage_events (
+      transcript_id, provider, stage, operation, status, model,
+      input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, total_tokens,
+      usage_hours, usage_seconds, usage_quantity_type, usage_multiplier,
+      rate_card_version, base_rate_per_hour_usd, feature_rate_per_hour_usd, pricing_meta,
+      duration_ms, request_meta, error_message, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      event.transcript_id,
+      event.provider,
+      event.stage,
+      event.operation,
+      event.status,
+      event.model ?? null,
+      event.input_tokens ?? null,
+      event.output_tokens ?? null,
+      event.reasoning_tokens ?? null,
+      event.cached_input_tokens ?? null,
+      event.total_tokens ?? null,
+      event.usage_hours ?? null,
+      event.usage_seconds ?? null,
+      event.usage_quantity_type ?? null,
+      event.usage_multiplier ?? null,
+      event.rate_card_version ?? null,
+      event.base_rate_per_hour_usd ?? null,
+      event.feature_rate_per_hour_usd ?? null,
+      event.pricing_meta ?? null,
+      event.duration_ms ?? null,
+      event.request_meta ?? null,
+      event.error_message ?? null,
+      new Date().toISOString(),
+    ],
+  });
+}
+
+export async function listProcessingUsageEventsByTranscript(transcriptId: string): Promise<ProcessingUsageEvent[]> {
+  await ensureInitialized();
+  const result = await client.execute({
+    sql: 'SELECT * FROM processing_usage_events WHERE transcript_id = ? ORDER BY created_at ASC, id ASC',
+    args: [transcriptId],
+  });
+  return result.rows.map(row => ({
+    id: Number(row.id),
+    transcript_id: row.transcript_id as string,
+    provider: row.provider as ProcessingUsageProvider,
+    stage: row.stage as string,
+    operation: row.operation as string,
+    status: row.status as ProcessingUsageStatus,
+    model: (row.model as string) ?? null,
+    input_tokens: (row.input_tokens as number) ?? null,
+    output_tokens: (row.output_tokens as number) ?? null,
+    reasoning_tokens: (row.reasoning_tokens as number) ?? null,
+    cached_input_tokens: (row.cached_input_tokens as number) ?? null,
+    total_tokens: (row.total_tokens as number) ?? null,
+    usage_hours: (row.usage_hours as number) ?? null,
+    usage_seconds: (row.usage_seconds as number) ?? null,
+    usage_quantity_type: (row.usage_quantity_type as string) ?? null,
+    usage_multiplier: (row.usage_multiplier as number) ?? null,
+    rate_card_version: (row.rate_card_version as string) ?? null,
+    base_rate_per_hour_usd: (row.base_rate_per_hour_usd as number) ?? null,
+    feature_rate_per_hour_usd: (row.feature_rate_per_hour_usd as number) ?? null,
+    pricing_meta: (row.pricing_meta as string) ?? null,
+    duration_ms: (row.duration_ms as number) ?? null,
+    request_meta: (row.request_meta as string) ?? null,
+    error_message: (row.error_message as string) ?? null,
+    created_at: row.created_at as string,
+  }));
+}
+
+export async function getProcessingUsageSummaryByTranscript(transcriptId: string): Promise<ProcessingUsageSummaryRow[]> {
+  await ensureInitialized();
+  const result = await client.execute({
+    sql: `SELECT
+      provider,
+      stage,
+      COUNT(*) AS events,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_events,
+      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_events,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+      COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens,
+      COALESCE(SUM(usage_hours), 0) AS usage_hours,
+      COALESCE(SUM(usage_seconds), 0) AS usage_seconds,
+      COALESCE(SUM(CASE
+        WHEN usage_hours IS NOT NULL THEN usage_hours * (COALESCE(base_rate_per_hour_usd, 0) + COALESCE(feature_rate_per_hour_usd, 0))
+        ELSE 0
+      END), 0) AS estimated_cost_usd
+      FROM processing_usage_events
+      WHERE transcript_id = ?
+      GROUP BY provider, stage
+      ORDER BY provider, stage`,
+    args: [transcriptId],
+  });
+
+  return result.rows.map(row => ({
+    provider: row.provider as ProcessingUsageProvider,
+    stage: row.stage as string,
+    events: Number(row.events),
+    success_events: Number(row.success_events),
+    error_events: Number(row.error_events),
+    input_tokens: Number(row.input_tokens),
+    output_tokens: Number(row.output_tokens),
+    reasoning_tokens: Number(row.reasoning_tokens),
+    cached_input_tokens: Number(row.cached_input_tokens),
+    total_tokens: Number(row.total_tokens),
+    usage_hours: Number(row.usage_hours),
+    usage_seconds: Number(row.usage_seconds),
+    estimated_cost_usd: Number(row.estimated_cost_usd),
+  }));
 }
 
 export async function getAllTranscriptedEntries(): Promise<string[]> {
@@ -460,4 +693,3 @@ export async function updateVideoEntryId(assetId: string, entryId: string): Prom
 }
 
 export const db = client;
-

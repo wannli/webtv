@@ -4,6 +4,7 @@ import {
   type TranscriptStatus, type TranscriptContent, type RawParagraph
 } from './turso';
 import { identifySpeakers } from './speaker-identification';
+import { trackAssemblyAIFetch, UsageOperations, UsageStages } from './usage-tracking';
 
 export { type TranscriptStatus } from './turso';
 
@@ -67,17 +68,29 @@ export async function getKalturaAudioUrl(kalturaId: string) {
 }
 
 export async function submitTranscription(audioUrl: string) {
-  const response = await fetch('https://api.assemblyai.com/v2/transcript', {
-    method: 'POST',
-    headers: {
-      'Authorization': process.env.ASSEMBLYAI_API_KEY!,
-      'Content-Type': 'application/json',
+  const requestBody = {
+    audio_url: audioUrl,
+    speaker_labels: true,
+    keyterms_prompt: ['UN80', 'Carolyn Schwalger', 'Brian Wallace', 'Guy Ryder'],
+  };
+  const response = await trackAssemblyAIFetch({
+    stage: UsageStages.transcribing,
+    operation: UsageOperations.assemblySubmit,
+    url: 'https://api.assemblyai.com/v2/transcript',
+    init: {
+      method: 'POST',
+      headers: {
+        'Authorization': process.env.ASSEMBLYAI_API_KEY!,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
     },
-    body: JSON.stringify({
-      audio_url: audioUrl,
-      speaker_labels: true,
-      keyterms_prompt: ['UN80', 'Carolyn Schwalger', 'Brian Wallace', 'Guy Ryder'],
-    }),
+    requestMeta: { endpoint: 'submit_transcript' },
+    resolveTranscriptId: (responseJson) => {
+      if (!responseJson || typeof responseJson !== 'object') return null;
+      const id = (responseJson as Record<string, unknown>).id;
+      return typeof id === 'string' ? id : null;
+    },
   });
 
   if (!response.ok) {
@@ -90,8 +103,15 @@ export async function submitTranscription(audioUrl: string) {
 }
 
 async function fetchAssemblyAIParagraphs(transcriptId: string): Promise<RawParagraph[]> {
-  const response = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}/paragraphs`, {
-    headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
+  const response = await trackAssemblyAIFetch({
+    transcriptId,
+    stage: UsageStages.transcribing,
+    operation: UsageOperations.assemblyFetchParagraphs,
+    url: `https://api.assemblyai.com/v2/transcript/${transcriptId}/paragraphs`,
+    init: {
+      headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
+    },
+    requestMeta: { endpoint: 'fetch_paragraphs' },
   });
   if (!response.ok) throw new Error('Failed to fetch paragraphs from AssemblyAI');
   const data = await response.json();
@@ -156,8 +176,15 @@ export async function pollTranscription(transcriptId: string): Promise<PollResul
   }
 
   // Still transcribing - check AssemblyAI
-  const pollResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
-    headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
+  const pollResponse = await trackAssemblyAIFetch({
+    transcriptId,
+    stage: UsageStages.transcribing,
+    operation: UsageOperations.assemblyPoll,
+    url: `https://api.assemblyai.com/v2/transcript/${transcriptId}`,
+    init: {
+      headers: { 'Authorization': process.env.ASSEMBLYAI_API_KEY! },
+    },
+    requestMeta: { endpoint: 'poll_transcript' },
   });
   if (!pollResponse.ok) throw new Error('Failed to poll AssemblyAI');
 
