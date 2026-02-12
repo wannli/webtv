@@ -676,7 +676,7 @@ async function tagSentencesWithTopics(
         transcriptId,
         stage: UsageStages.taggingSentences,
         operation: UsageOperations.openaiTagSentenceTopics,
-        model: 'gpt-5',
+        model: 'gpt-5-mini',
         requestMeta: {
           sentence_global_index: globalIdx,
           statement_index: sent.statementIdx,
@@ -684,7 +684,7 @@ async function tagSentencesWithTopics(
           sentence_index: sent.sentenceIdx,
         },
         request: {
-          model: 'gpt-5',
+          model: 'gpt-5-mini',
           messages: [{
           role: 'system',
           content: `You are categorizing UN proceeding sentences by topic.
