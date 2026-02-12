@@ -11,7 +11,8 @@
     "retranscribe": "tsx scripts/retranscribe.ts",
     "sync-videos": "tsx scripts/sync-videos.ts",
     "fetch-video-metadata": "tsx scripts/fetch-video-metadata.ts",
-    "usage-report": "tsx scripts/usage-report.ts"
+    "usage-report": "tsx scripts/usage-report.ts",
+    "usage-benchmark": "tsx scripts/usage-benchmark.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.0",
