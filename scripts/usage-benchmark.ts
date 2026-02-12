@@ -1,6 +1,10 @@
 #!/usr/bin/env tsx
 import '../lib/load-env';
 
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
+import { ASSEMBLYAI_BASE_RATE_PER_HOUR_USD } from '../lib/config';
 import { getTursoClient } from '../lib/turso';
 
 const sinceArg = process.argv.find(arg => arg.startsWith('--since='));
@@ -11,12 +15,72 @@ if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
   process.exit(1);
 }
 
+type Pricing = {
+  inputPerM: number;
+  cachedInputPerM: number;
+  outputPerM: number;
+};
+
+const OPENAI_MODEL_PRICING: Record<string, Pricing> = {
+  'gpt-5': { inputPerM: 1.25, cachedInputPerM: 0.125, outputPerM: 10 },
+  'gpt-5-mini': { inputPerM: 0.25, cachedInputPerM: 0.025, outputPerM: 2 },
+};
+
+function assumedModelForStage(stage: string): keyof typeof OPENAI_MODEL_PRICING {
+  return stage === 'tagging_sentences' ? 'gpt-5-mini' : 'gpt-5';
+}
+
+type MetadataRow = {
+  body: string | null;
+  date: string | null;
+  duration: string | null;
+};
+
+function parseDurationHours(duration: string | null): number {
+  if (!duration) return 0;
+  const m = duration.match(/^(\d+):(\d{2}):(\d{2})$/);
+  if (!m) return 0;
+  const hours = Number(m[1]);
+  const minutes = Number(m[2]);
+  const seconds = Number(m[3]);
+  return hours + minutes / 60 + seconds / 3600;
+}
+
+async function loadHoursPerDayByBody(): Promise<Map<string, number>> {
+  const filePath = path.join(process.cwd(), 'analysis', 'video-metadata.json');
+  const raw = await readFile(filePath, 'utf8');
+  const rows = JSON.parse(raw) as MetadataRow[];
+
+  const hoursByDateBody = new Map<string, number>();
+  for (const row of rows) {
+    const bodyKey = row.body ?? 'NaN';
+    const dateKey = row.date ?? 'NaN';
+    const key = `${dateKey}||${bodyKey}`;
+    const next = (hoursByDateBody.get(key) ?? 0) + parseDurationHours(row.duration);
+    hoursByDateBody.set(key, next);
+  }
+
+  const bodyAgg = new Map<string, { total: number; days: number }>();
+  for (const [dateBody, hours] of hoursByDateBody.entries()) {
+    const body = dateBody.split('||')[1];
+    const current = bodyAgg.get(body) ?? { total: 0, days: 0 };
+    current.total += hours;
+    current.days += 1;
+    bodyAgg.set(body, current);
+  }
+
+  const hoursPerDayByBody = new Map<string, number>();
+  for (const [body, agg] of bodyAgg.entries()) {
+    const avg = agg.days > 0 ? agg.total / agg.days : 0;
+    hoursPerDayByBody.set(body, avg);
+  }
+  return hoursPerDayByBody;
+}
+
 async function run() {
   const client = await getTursoClient();
 
-  const sincePredicate = since
-    ? `AND created_at >= ?`
-    : '';
+  const sincePredicate = since ? `AND created_at >= ?` : '';
   const queryArgs = since ? [since] : [];
 
   const overallResult = await client.execute({
@@ -184,7 +248,7 @@ async function run() {
   });
 
   console.log('\nOpenAI stage breakdown (tokens/hour over same total transcribed hours)');
-  console.table(stageResult.rows.map(stage => ({
+  const stageRows = stageResult.rows.map(stage => ({
     stage: stage.stage,
     transcripts: Number(stage.transcripts),
     input_tokens: Number(stage.input_tokens),
@@ -196,7 +260,31 @@ async function run() {
     reasoning_tokens_per_hour: Number(Number(stage.reasoning_tokens_per_hour).toFixed(2)),
     cached_input_tokens_per_hour: Number(Number(stage.cached_input_tokens_per_hour).toFixed(2)),
     total_tokens_per_hour: Number(Number(stage.total_tokens_per_hour).toFixed(2)),
-  })));
+  }));
+  console.table(stageRows);
+
+  let openaiCostPerHour = 0;
+  const projectedRows = stageRows.map(stage => {
+    const model = assumedModelForStage(String(stage.stage));
+    const pricing = OPENAI_MODEL_PRICING[model];
+    const uncachedInput = Math.max(0, stage.input_tokens_per_hour - stage.cached_input_tokens_per_hour);
+    const hourlyCost =
+      (uncachedInput * pricing.inputPerM) / 1_000_000 +
+      (stage.cached_input_tokens_per_hour * pricing.cachedInputPerM) / 1_000_000 +
+      (stage.output_tokens_per_hour * pricing.outputPerM) / 1_000_000;
+    openaiCostPerHour += hourlyCost;
+    return {
+      stage: stage.stage,
+      assumed_model: model,
+      input_tokens_per_hour: stage.input_tokens_per_hour,
+      cached_input_tokens_per_hour: stage.cached_input_tokens_per_hour,
+      output_tokens_per_hour: stage.output_tokens_per_hour,
+      hourly_cost_usd: Number(hourlyCost.toFixed(4)),
+    };
+  });
+
+  console.log('\nOpenAI projected hourly cost by stage (assumed future model mapping)');
+  console.table(projectedRows);
 
   const perVideoResult = await client.execute({
     sql: `
@@ -266,6 +354,66 @@ async function run() {
     cached_input_tokens_per_hour: Number(Number(video.cached_input_tokens_per_hour).toFixed(2)),
     total_tokens_per_hour: Number(Number(video.total_tokens_per_hour).toFixed(2)),
   })));
+
+  let hoursPerDayByBody: Map<string, number>;
+  try {
+    hoursPerDayByBody = await loadHoursPerDayByBody();
+  } catch (error) {
+    console.warn(`\nSkipping yearly cost estimate: failed to read analysis/video-metadata.json (${error instanceof Error ? error.message : error})`);
+    return;
+  }
+
+  const yearlyRows: Array<{
+    body: string;
+    hours_per_day: number;
+    assemblyai_cost_per_day: number;
+    assemblyai_cost_per_year: number;
+    openai_cost_per_day: number;
+    openai_cost_per_year: number;
+  }> = [];
+
+  for (const [body, hoursPerDay] of hoursPerDayByBody.entries()) {
+    const assemblyCostDay = hoursPerDay * ASSEMBLYAI_BASE_RATE_PER_HOUR_USD;
+    const openaiCostDay = hoursPerDay * openaiCostPerHour;
+    yearlyRows.push({
+      body,
+      hours_per_day: Number(hoursPerDay.toFixed(2)),
+      assemblyai_cost_per_day: Number(assemblyCostDay.toFixed(2)),
+      assemblyai_cost_per_year: Number((assemblyCostDay * 365).toFixed(2)),
+      openai_cost_per_day: Number(openaiCostDay.toFixed(2)),
+      openai_cost_per_year: Number((openaiCostDay * 365).toFixed(2)),
+    });
+  }
+
+  yearlyRows.sort((a, b) => a.body.localeCompare(b.body));
+
+  const totals = yearlyRows.reduce((acc, rowBody) => {
+    acc.hours_per_day += rowBody.hours_per_day;
+    acc.assemblyai_cost_per_day += rowBody.assemblyai_cost_per_day;
+    acc.assemblyai_cost_per_year += rowBody.assemblyai_cost_per_year;
+    acc.openai_cost_per_day += rowBody.openai_cost_per_day;
+    acc.openai_cost_per_year += rowBody.openai_cost_per_year;
+    return acc;
+  }, {
+    body: 'Total',
+    hours_per_day: 0,
+    assemblyai_cost_per_day: 0,
+    assemblyai_cost_per_year: 0,
+    openai_cost_per_day: 0,
+    openai_cost_per_year: 0,
+  });
+
+  yearlyRows.push({
+    ...totals,
+    hours_per_day: Number(totals.hours_per_day.toFixed(2)),
+    assemblyai_cost_per_day: Number(totals.assemblyai_cost_per_day.toFixed(2)),
+    assemblyai_cost_per_year: Number(totals.assemblyai_cost_per_year.toFixed(2)),
+    openai_cost_per_day: Number(totals.openai_cost_per_day.toFixed(2)),
+    openai_cost_per_year: Number(totals.openai_cost_per_year.toFixed(2)),
+  });
+
+  console.log('\nYearly cost estimate by body (metadata average hours/day + assumed stage-to-model mapping)');
+  console.table(yearlyRows);
 }
 
 run().catch(error => {
