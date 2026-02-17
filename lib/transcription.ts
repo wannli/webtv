@@ -70,6 +70,7 @@ export async function getKalturaAudioUrl(kalturaId: string) {
 export async function submitTranscription(audioUrl: string) {
   const requestBody = {
     audio_url: audioUrl,
+    speech_models: ['universal-3-pro'],
     speaker_labels: true,
     keyterms_prompt: ['UN80', 'Carolyn Schwalger', 'Brian Wallace', 'Guy Ryder'],
   };
