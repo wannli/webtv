@@ -15,7 +15,7 @@ The app scrapes the UN Web TV schedule (no official API), displays videos in a f
 - **Table**: TanStack Table v8
 - **Database**: Turso (libSQL) — stores transcripts, speaker mappings, usage tracking, video metadata
 - **Transcription**: AssemblyAI (speech-to-text with speaker diarization)
-- **Speaker ID**: Azure OpenAI (GPT-4.1-mini via structured outputs / Zod schemas)
+- **Speaker ID**: OpenAI (GPT-5 / GPT-5-mini via structured outputs / Zod schemas)
 - **Video**: Kaltura embedded player (partner ID 2503451)
 - **Package manager**: pnpm
 - **Analysis**: Python 3.13+ with Jupyter/pandas (cost estimation notebook)
@@ -99,10 +99,7 @@ No official UN API — the app scrapes HTML from `https://webtv.un.org/en/schedu
 | `ASSEMBLYAI_API_KEY` | AssemblyAI transcription |
 | `TURSO_DB` | Turso database URL |
 | `TURSO_TOKEN` | Turso auth token |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI for speaker identification |
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint |
-| `AZURE_OPENAI_API_VERSION` | Azure OpenAI API version |
-| `AZURE_OPENAI_DEPLOYMENT` | Azure OpenAI model deployment name |
+| `OPENAI_API_KEY` | OpenAI for speaker identification |
 
 ## Development
 

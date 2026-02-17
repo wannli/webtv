@@ -1,4 +1,4 @@
-import { AzureOpenAI } from 'openai';
+import OpenAI from 'openai';
 import { z } from 'zod';
 import { zodResponseFormat } from 'openai/helpers/zod';
 import { setSpeakerMapping, SpeakerInfo } from './speakers';
@@ -76,7 +76,6 @@ export type EvidenceQuote = z.infer<typeof EvidenceQuoteSchema>;
 export type Position = z.infer<typeof PositionSchema>;
 export type Proposition = z.infer<typeof PropositionSchema>;
 
-const API_VERSION = '2025-01-01-preview';
 
 const IDENTIFICATION_RULES = `IDENTIFICATION RULES:
 - Use AssemblyAI labels as HINTS for speaker changes (label change often = new speaker), but verify with text
@@ -157,10 +156,8 @@ export interface ParagraphInput {
 export type SpeakerMapping = Record<string, SpeakerInfo>;
 
 function createOpenAIClient() {
-  return new AzureOpenAI({
-    apiKey: process.env.AZURE_OPENAI_API_KEY,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT,
-    apiVersion: API_VERSION,
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
   });
 }
 
@@ -268,7 +265,7 @@ function buildStatementsWithSentences(paragraphInputs: ParagraphInput[]): Statem
 async function defineTopics(
   paragraphs: ParagraphInput[],
   speakerMapping: SpeakerMapping,
-  client: AzureOpenAI,
+  client: OpenAI,
   transcriptId?: string,
 ): Promise<Record<string, { key: string; label: string; description: string }>> {
   console.log(`  → Defining topics...`);
@@ -358,7 +355,7 @@ ${contextParts.join('\n\n')}`,
 export async function analyzePropositions(
   paragraphs: ParagraphInput[],
   speakerMapping: SpeakerMapping,
-  client: AzureOpenAI,
+  client: OpenAI,
   transcriptId?: string,
 ): Promise<Proposition[]> {
   console.log(`  → Analyzing propositions...`);
@@ -484,7 +481,7 @@ async function _tagParagraphsWithTopics(
   paragraphs: ParagraphInput[],
   topics: Record<string, { key: string; description: string; color: string }>,
   speakerMapping: SpeakerMapping,
-  client: AzureOpenAI,
+  client: OpenAI,
   transcriptId?: string,
 ): Promise<Record<string, string[]>> {
   console.log(`  → Tagging paragraphs with topics...`);
@@ -602,7 +599,7 @@ async function tagSentencesWithTopics(
   statements: StatementWithSentences[],
   topics: Record<string, { key: string; label: string; description: string }>,
   speakerMapping: SpeakerMapping,
-  client: AzureOpenAI,
+  client: OpenAI,
   transcriptId?: string,
 ): Promise<StatementWithSentences[]> {
   console.log(`  → Tagging sentences with topics...`);
@@ -748,7 +745,7 @@ ${numberedSentences}`,
 }
 
 async function resegmentParagraph(
-  client: AzureOpenAI,
+  client: OpenAI,
   paragraph: ParagraphInput,
   contextParas: Array<{ para: ParagraphInput, speaker: SpeakerInfo, position: 'before' | 'current' | 'after' }>,
   paragraphIndex?: number,
