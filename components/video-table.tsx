@@ -348,11 +348,11 @@ export function VideoTable({ videos }: { videos: Video[] }) {
       columnHelper.accessor('cleanTitle', {
         header: 'Title',
         cell: (info) => {
-          const encodedId = encodeURIComponent(info.row.original.id);
+          const safeId = encodeURIComponent(info.row.original.id.replace(/\//g, '~'));
           const isScheduled = info.row.original.status === 'scheduled';
           return (
             <a
-              href={`/video/${encodedId}`}
+              href={`/video/${safeId}`}
               className={`hover:underline ${isScheduled ? 'text-muted-foreground' : 'text-primary'}`}
             >
               {info.getValue()}
@@ -551,7 +551,7 @@ export function VideoTable({ videos }: { videos: Video[] }) {
           return (
             <a
               key={row.id}
-              href={`/video/${encodeURIComponent(video.id)}`}
+              href={`/video/${encodeURIComponent(video.id.replace(/\//g, '~'))}`}
               className={`block p-4 border rounded-lg hover:bg-muted/50 transition-colors ${isScheduled ? 'opacity-50' : ''}`}
             >
               <div className="flex justify-between items-start gap-3">
