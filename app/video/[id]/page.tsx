@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function VideoPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const decodedId = decodeURIComponent(id).replace(/~/g, '/');
+  const decodedId = decodeURIComponent(id);
   // Search backwards from today to find the video (much faster than loading 365 days)
   const video = await getVideoById(decodedId, 60);
 
