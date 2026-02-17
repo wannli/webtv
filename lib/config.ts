@@ -1,4 +1,4 @@
-export const scheduleLookbackDays = 365;
+export const scheduleLookbackDays = 30;
 
 // Update this snapshot whenever pricing assumptions are revised.
 export const ASSEMBLYAI_RATE_CARD_VERSION = '2026-02-12';

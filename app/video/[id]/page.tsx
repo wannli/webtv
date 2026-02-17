@@ -10,7 +10,7 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
   const { id } = await params;
   const decodedId = decodeURIComponent(id).replace(/~/g, '/');
   // Search backwards from today to find the video (much faster than loading 365 days)
-  const video = await getVideoById(decodedId);
+  const video = await getVideoById(decodedId, 60);
 
   if (!video) {
     notFound();
