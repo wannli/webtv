@@ -1,4 +1,4 @@
-import { AzureOpenAI } from 'openai';
+import OpenAI from 'openai';
 import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
@@ -139,7 +139,7 @@ async function safeReadJsonBody(response: Response): Promise<unknown> {
 }
 
 interface OpenAITrackedCallArgs {
-  client: AzureOpenAI;
+  client: OpenAI;
   transcriptId?: string;
   stage: string;
   operation: string;
